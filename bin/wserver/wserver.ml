@@ -532,7 +532,7 @@ let f syslog addr_opt port tmout max_clients g =
   let a =  (Unix.ADDR_INET (addr, port)) in 
   Unix.bind s a;
   Unix.listen s 4;
-
+  Unix.setsockopt s Unix.SO_KEEPALIVE true;
   let tm = Unix.localtime (Unix.time ()) in
   eprintf "Ready %4d-%02d-%02d %02d:%02d port %d...\n%!"
     (1900 + tm.Unix.tm_year)
