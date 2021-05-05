@@ -61,31 +61,37 @@ let syslog level msg =
     let ident = Filename.basename @@ Sys.executable_name in
     let tag = (if String.length ident > 32 then String.sub ident 0 32 else ident) in
     let logfn =  Filename.concat !(Util.cnt_dir) "syslog.txt" in
-    let log fname flag = try open_out_gen (flag::[Open_wronly; Open_creat]) 0o777 fname with e -> 
+    let log fname flag = 
+      try 
+        let oc = open_out_gen (flag::[Open_wronly; Open_creat]) 0o777 fname in
+        oc, (out_channel_length oc)
+      with e -> 
       if not !syslog_block then
         begin
           Printf.eprintf "Error : Syslog disabled, messages redirected to stderr !\n%s\n%!"  (Printexc.to_string e);
           syslog_block:=true
         end; 
-      stderr;
+      stderr, -1;
     in
-    let oc = log logfn Open_append in
+    let oc, logsize = log logfn Open_append in
     Printf.fprintf oc "%s\t%s[%s]\t%d\t%s\n" (systime ()) tag severity severityLevel msg;
     if oc <> stderr then
-      let logsize = out_channel_length oc in
-      if !syslog_block then
-        begin
-          Printf.fprintf oc "%s\t%s[Notice]\t5\tSome syslog messages were lost (error writing file)\n%!" (systime ()) tag;
-          Printf.eprintf "Syslog enabled; Writing successfull\n%!";
-          syslog_block:=false;
-        end;
-      close_out oc;
-      if logsize > 16000 then
-        begin
-          let bakfn = Filename.concat !(Util.cnt_dir) "syslog-bak.txt" in
-          try Unix.rename logfn bakfn with _ -> ();
-          let oc = log logfn Open_trunc in
-          Printf.fprintf oc "%s\t%s[Info]\t6\tClear log and save previous log to %s\n" (systime ()) tag bakfn;
-          close_out_noerr oc
-        end
+      begin
+        if !syslog_block then
+          begin
+            Printf.fprintf oc "%s\t%s[Notice]\t5\tSome syslog messages were lost (error writing file)\n%!" (systime ()) tag;
+            Printf.eprintf "Syslog enabled; Writing successfull\n%!";
+            syslog_block:=false
+          end;
+        close_out oc;
+        if logsize > 16000 then
+          begin
+            let bakfn = Filename.concat !(Util.cnt_dir) "syslog-bak.txt" in
+            (try Unix.rename logfn bakfn with _ ->
+              Printf.eprintf "Error : backup %s to %s failed\n%!" logfn bakfn);
+            let oc, _ = log logfn Open_trunc in
+            Printf.fprintf oc "%s\t%s[Info]\t6\t%s log saved to %s and cleaned\n" (systime ()) tag logfn bakfn;
+            close_out oc
+          end
+      end
 #endif

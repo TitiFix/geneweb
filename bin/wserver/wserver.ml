@@ -379,7 +379,7 @@ type conn_info = {
     start_time : float;
     mutable kind : conn_kind }
 
-let wserver_basic syslog tmout g s addr_server =
+let wserver_basic syslog tmout max_clients g s addr_server =
   let server = {
     addr = addr_server;
     start_time = Unix.time ();
@@ -389,6 +389,11 @@ let wserver_basic syslog tmout g s addr_server =
   in
   let cl = ref [server] in
   let fdl = ref [s] in
+  let max_conn = 
+    match max_clients with
+    | Some max -> max * 5
+    | None -> 10
+  in 
   let conn_tmout = Float.of_int tmout in
   let used_mem () = 
     let st = Gc.stat () in 
@@ -400,18 +405,24 @@ let wserver_basic syslog tmout g s addr_server =
     let sd = Float.to_int @@ 1000000.0 *. (mod_float now 1.0)  in 
     Printf.sprintf "%02d:%02d:%02d.%06d" tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec sd
   in
-  let shutdown fd = try Unix.shutdown fd Unix.SHUTDOWN_ALL with
+  let shutdown conn = try Unix.shutdown conn.fd Unix.SHUTDOWN_ALL with
   | Unix.Unix_error(Unix.ECONNRESET, "shutdown", "") -> ()
-  | exc -> raise exc
+  | exc -> 
+    Printf.eprintf "Shutdown connection from %s, unknown exception : %s\n%!" 
+      (string_of_sockaddr conn.addr)
+      (Printexc.to_string exc);
+    raise exc
   in
   let select () = try Unix.select !fdl [] [] 5.0 with 
   | Unix.Unix_error(Unix.ECONNRESET, "select", "") -> ([], [], []) 
-(* debug ------------- to be remove after tracking *)
+(* debug ------------- to be remove after tracking ----- *)
+(* Unix.Unix_error(40, "select", "") sometimes ? ELOOP ? *)
   | Unix.Unix_error( _ , "select", "") as e -> 
       eprintf "%s - wait for connection - %s\n%!" (systime()) (Printexc.to_string e);
+      Gc.compact (); (* Useful ? *)
       Unix.sleep 1; 
       ([], [], []) 
-(* debug ----------------------------------------- *)
+(* debug ----------------------------------------------- *)
   | exc -> raise exc
   in
   let mem_limit = ref (used_mem ()) in 
@@ -427,12 +438,12 @@ let wserver_basic syslog tmout g s addr_server =
             let ttl =  Unix.time() -. conn.start_time in
             if (ttl >= conn_tmout) && (conn.kind = Connected_client) then 
               begin
-                shutdown conn.fd;
+                shutdown conn;
                 close_out_noerr conn.oc;
                 Unix.close conn.fd;
                 fdl:=List.filter (fun fd -> fd<>conn.fd ) !fdl;
                 conn.kind <- Closed_client;
-                syslog `LOG_DEBUG (Printf.sprintf "%s connection closed" (string_of_sockaddr conn.addr) );
+                syslog `LOG_DEBUG (Printf.sprintf "%s connection closed (timeout)" (string_of_sockaddr conn.addr) )
               end
             else if conn.kind = Connected_client then 
                 flush conn.oc
@@ -451,7 +462,7 @@ let wserver_basic syslog tmout g s addr_server =
           ) !cl;
           cl:=List.filter (fun t -> t.kind <> Closed_client ) !cl;
           let n = List.length !cl in
-          if n > 10 then failwith ("Too many connection remain : " ^ (string_of_int n))
+          if n > max_conn then failwith ("Too many connection remaining : " ^ (string_of_int n))
         end
     | ( l, _, _) -> 
       let rec loop l i = 
@@ -490,8 +501,14 @@ let wserver_basic syslog tmout g s addr_server =
                 treat_connection tmout g conn.addr fd;
                 flush conn.oc;
                 remove_from_poll conn.fd;
-                shutdown conn.fd;
-              with _ -> ();
+                shutdown conn;
+              with
+              | Unix.Unix_error(Unix.ECONNRESET, _ , _) -> ()
+              | e ->
+                Printf.eprintf "Connection from %s, unexcepted event : %s \n%!" 
+                                (string_of_sockaddr conn.addr)
+                                (Printexc.to_string e);
+              Printf.eprintf "connection client closed";
               close_out_noerr conn.oc;
               Unix.close conn.fd;
             end
@@ -522,7 +539,7 @@ let f syslog addr_opt port tmout max_clients g =
     (succ tm.Unix.tm_mon) tm.Unix.tm_mday tm.Unix.tm_hour tm.Unix.tm_min
     port ;
 #ifdef WINDOWS
-  wserver_basic syslog tmout g s a
+  wserver_basic syslog tmout max_clients g s a
 #else
   let _ = Unix.nice 1 in
   while true do

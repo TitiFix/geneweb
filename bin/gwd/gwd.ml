@@ -401,6 +401,7 @@ let trace_auth base_env f =
 
 let unauth_server conf ar =
   let typ = if ar.ar_passwd = "w" then "Wizard" else "Friend" in
+  GwdLog.syslog `LOG_NOTICE (Printf.sprintf "Starting Authentication : base:%s, type:%s" conf.bname typ);
   Output.status conf Def.Unauthorized;
   if !use_auth_digest_scheme then
     let nonce = digest_nonce conf.ctime in
@@ -1632,7 +1633,7 @@ let connection (addr, request) script_name contents' =
           try (Unix.gethostbyaddr iaddr).Unix.h_name, port with
             _ -> Unix.string_of_inet_addr iaddr, port
   in
-  GwdLog.syslog `LOG_INFO (Printf.sprintf "Incoming request from %s:%d : %s (%s)" from port script_name contents');
+  GwdLog.syslog `LOG_INFO (Printf.sprintf "Incoming request %s (%s) from %s:%d" script_name contents' from port );
   if script_name = "robots.txt" then robots_txt printer_conf
   else if excluded from then refuse_log printer_conf from
   else
@@ -1852,9 +1853,9 @@ let main () =
     ; ("-unsafe_plugin", arg_plugin ~check:false, "<PLUGIN>.cmxs DO NOT USE UNLESS YOU TRUST THE ORIGIN OF <PLUGIN>.")
     ; ("-plugins", arg_plugins ~check:true, "<DIR> load all plugins in <DIR>.")
     ; ("-unsafe_plugins", arg_plugins ~check:false, "<DIR> DO NOT USE UNLESS YOU TRUST THE ORIGIN OF EVERY PLUGIN IN <DIR>.")
-#ifdef UNIX
     ; ("-max_clients", Arg.Int (fun x -> max_clients := Some x), "<NUM> Max number of clients treated at the same time (default: no limit) (not cgi).")
     ; ("-conn_tmout", Arg.Int (fun x -> conn_timeout := x), "<SEC> Connection timeout (default " ^ string_of_int !conn_timeout ^ "s; 0 means no limit)." )
+#ifdef UNIX
     ; ("-daemon", Arg.Set daemon, " Unix daemon mode.")
 #endif
 #ifdef API
@@ -1963,10 +1964,10 @@ let () =
     exit 1
 #endif
   | Dynlink.Error e -> 
-    GwdLog.syslog `LOG_EMERG (Dynlink.error_message e);
+    GwdLog.syslog `LOG_EMERG ("Geneweb terminated : " ^ (Dynlink.error_message e));
     exit 1
   | e -> 
-    GwdLog.syslog `LOG_EMERG (Printexc.to_string e);
+    GwdLog.syslog `LOG_EMERG ("Geneweb terminated : " ^ (Printexc.to_string e));
 #ifdef DEBUG
     let tm = Unix.localtime (Unix.time ()) in
     begin match !GwdLog.oc with
