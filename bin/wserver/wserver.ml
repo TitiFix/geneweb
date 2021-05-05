@@ -405,13 +405,13 @@ let wserver_basic syslog tmout max_clients g s addr_server =
     let sd = Float.to_int @@ 1000000.0 *. (mod_float now 1.0)  in 
     Printf.sprintf "%02d:%02d:%02d.%06d" tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec sd
   in
-  let shutdown conn = try Unix.shutdown conn.fd Unix.SHUTDOWN_ALL with
+  let shutdown conn stop_err = try Unix.shutdown conn.fd Unix.SHUTDOWN_ALL with
   | Unix.Unix_error(Unix.ECONNRESET, "shutdown", "") -> ()
   | exc -> 
     Printf.eprintf "Shutdown connection from %s, unknown exception : %s\n%!" 
       (string_of_sockaddr conn.addr)
       (Printexc.to_string exc);
-    raise exc
+    if stop_err then raise exc
   in
   let select () = try Unix.select !fdl [] [] 5.0 with 
   | Unix.Unix_error(Unix.ECONNRESET, "select", "") -> ([], [], []) 
@@ -438,7 +438,7 @@ let wserver_basic syslog tmout max_clients g s addr_server =
             let ttl =  Unix.time() -. conn.start_time in
             if (ttl >= conn_tmout) && (conn.kind = Connected_client) then 
               begin
-                shutdown conn;
+                shutdown conn false;
                 close_out_noerr conn.oc;
                 Unix.close conn.fd;
                 fdl:=List.filter (fun fd -> fd<>conn.fd ) !fdl;
@@ -489,26 +489,19 @@ let wserver_basic syslog tmout max_clients g s addr_server =
                 fdl:=List.filter (fun t -> t <> fd ) !fdl;
                 cl:=List.filter (fun t -> t.fd <> fd ) !cl
               in 
-              wserver_sock := conn.fd;
-              wserver_oc := conn.oc;
-              (* If a Windows computer goes to sleep, it can put the TCP / IP connections
-               in use to sleep without sending all data.
-               The remote host will therefore cut the TCP / IP connection on timeout. 
-               When waking up the server can then try to send data to a closed connection. 
-               This can generate a many normal exception (to be ignored) like :
-               - Sys_error("An existing connection was forcibly closed by the remote host") *)
-              try
+              begin try
+                wserver_sock := conn.fd;
+                wserver_oc := conn.oc;
                 treat_connection tmout g conn.addr fd;
                 flush conn.oc;
-                remove_from_poll conn.fd;
-                shutdown conn;
               with
-              | Unix.Unix_error(Unix.ECONNRESET, _ , _) -> ()
               | e ->
                 Printf.eprintf "Connection from %s, unexcepted event : %s \n%!" 
                                 (string_of_sockaddr conn.addr)
-                                (Printexc.to_string e);
-              Printf.eprintf "connection client closed";
+                                (Printexc.to_string e)
+              end;
+              remove_from_poll conn.fd;
+              shutdown conn false;
               close_out_noerr conn.oc;
               Unix.close conn.fd;
             end
