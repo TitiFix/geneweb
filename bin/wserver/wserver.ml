@@ -11,8 +11,6 @@ let wsocket () = !wserver_sock
 let wserver_oc = ref stdout
 let woc () = !wserver_oc
 
-let wflush () = flush !wserver_oc
-
 let printnl () =
   if not !cgi then output_byte !wserver_oc 13;
   output_byte !wserver_oc 10
@@ -158,7 +156,7 @@ let timeout tmout spid _ =
         printf "<body><h1>Time out</h1>\n";
         printf "Computation time > %d second(s)\n" tmout;
         printf "</body>\n";
-        wflush ();
+        flush !wserver_oc;
         exit 0
       end
     else exit 0;
@@ -197,29 +195,78 @@ let check_stopping () =
       exit 0
     end
 
+let log_exn e info addr path query = 
+  let systime () =
+    let now = Unix.gettimeofday () in
+    let tm = Unix.localtime (now) in
+    let sd = Float.to_int @@ 1000000.0 *. (mod_float now 1.0)  in 
+    Printf.sprintf "%02d:%02d:%02d.%06d" tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec sd
+  in   
+  let fname =  Sys.executable_name ^ "-error.txt " in
+  let msg = Printf.sprintf 
+              "---- %s - Unexcepted exception : %s\n\
+              - Raised with request %s?%s%s\n\
+              - Mode : %s, process id = %d\n\
+              - HTTP state (printing_state) : %s before exception\n\
+              - Info :\n%s\n"
+              (systime()) (Printexc.to_string e) 
+              path query 
+              ((if addr <> "" then " from " else "") ^ addr)
+              (if !cgi then "CGI script" else "HTTP server") (Unix.getpid ())
+              (match !printing_state with 
+              | Nothing -> "Nothing sent"
+              | Status -> "HTTP status sent without content"
+              | Contents -> "Some HTTP data sent" 
+              )
+              info 
+  in
+  try
+    let oc = open_out_gen ([Open_wronly; Open_append; Open_creat]) 0o777 fname in
+    let logsize = out_channel_length oc in 
+    let oc = if logsize < 16000 then oc 
+    else (close_out oc; open_out_gen ([Open_wronly; Open_trunc; Open_creat]) 0o777 fname)
+    in 
+    output_string oc msg;
+    close_out_noerr oc;
+    fname
+  with _ -> 
+    output_string stderr msg;
+    flush stderr;
+    ""
+
 let print_internal_error e addr path query =
+  let _ = log_exn e (Printexc.get_backtrace ()) addr path query in 
+  let state = !printing_state in
   if !printing_state = Nothing then 
     http (if !cgi then Def.OK else Def.Internal_Server_Error);
   if !printing_state = Status then 
     begin
       header "Content-type: text/html; charset=UTF-8";
+      header "Connection: close"
     end;
-  printf "<html>\n<title>Geneweb server error</title>\n<body>\
-          <h1>Unexpected Geneweb error, request not complete :</h1>\
-          <pre>- Raised with request %s?%s from %s\n\
+  printf "<!DOCTYPE html>\n<html><head><title>Geneweb server error</title></head>\n<body>\n\
+          <h1>Unexpected Geneweb error, request not complete :</h1>\n\
+          <pre>- Raised with request %s?%s%s\n\
           - Mode : %s, process id = %d\n\
+          - HTTP state (printing_state) : %s before exception\n\
           - Exception : %s\n\
-          - Backtrace :<hr>\n%s\n</pre><hr>\
-          <a href=\\>[Geneweb Home page]</a>  \
+          - Backtrace :\n<hr>\n%s\n</pre><hr>\n\
+          <a href=\\>[Home page]</a>  \
           <a href=\"javascript:window.history.go(-1)\">[Previous page]</a>\n\
           </body>\n</html>\n"
           path query 
-          (if addr = "" then "not significant" else addr)
-          (if !cgi then "CGI" else "Server") (Unix.getpid ())
-          (Printexc.to_string e) 
+          ((if addr <> "" then " from " else "") ^ addr)
+          (if !cgi then "CGI script" else "HTTP server") (Unix.getpid ())
+          (match state with 
+            | Nothing -> "Nothing sent"
+            | Status -> "HTTP status sent without content"
+            | Contents -> "Some HTTP data sent" 
+          )
+          (match e with 
+            | Sys_error m -> ("System error : " ^ m)
+            | _ -> Printexc.to_string e
+          )
           (Printexc.get_backtrace ())
-          ;
-  wflush ()
 
 let treat_connection tmout callback addr fd =
   if Sys.unix then
@@ -255,19 +302,23 @@ let treat_connection tmout callback addr fd =
   | Http_post     (* application/x-www-form-urlencoded *)
   | Http_get ->
       begin 
-        try callback (addr, request) path query 
+        try 
+          callback (addr, request) path query
         with e -> 
-          print_internal_error e (string_of_sockaddr addr) path query
+          let msg = match Unix.getsockopt_error fd with
+          | Some m -> Unix.error_message m
+          | None -> "None"
+          in
+          print_internal_error e ((string_of_sockaddr addr) ^ " ---" ^ msg) path query
       end
   | _ -> 
       http Def.Method_Not_Allowed;
       header "Content-type: text/html; charset=UTF-8";
       header "Connection: close";
       printf "<html>\n\
-              <title>Not allowed HTTP method</title>\n\
+              <<head>title>Not allowed HTTP method</title></head>\n\
               <body>Not allowed HTTP method</body>\n\
               </html>\n";
-      wflush ();
   ;
   if !printing_state = Status then 
     failwith ("Unexcepted HTTP printing state, connection from " ^ (string_of_sockaddr addr) ^ " without content sent :" );
@@ -334,10 +385,9 @@ let skip_possible_remaining_chars fd =
   
  let close_connection () =
   if not !connection_closed then begin
-    wflush () ;
-    Unix.shutdown !wserver_sock Unix.SHUTDOWN_SEND ;
+    flush !wserver_oc;
+    (try Unix.shutdown !wserver_sock Unix.SHUTDOWN_SEND with _ ->());
     skip_possible_remaining_chars !wserver_sock ;
-    (* Closing the channel flushes the data and closes the underlying file descriptor *)
     close_out !wserver_oc ;
     connection_closed := true
   end
@@ -391,7 +441,7 @@ let wserver_basic syslog tmout max_clients g s addr_server =
   let fdl = ref [s] in
   let max_conn = 
     match max_clients with
-    | Some max -> max * 5
+    | Some max -> if max = 0 then 10 else max * 5
     | None -> 10
   in 
   let conn_tmout = Float.of_int tmout in
@@ -399,37 +449,28 @@ let wserver_basic syslog tmout max_clients g s addr_server =
     let st = Gc.stat () in 
     (st.live_blocks * Sys.word_size) / 8 / 1024
   in 
-  let systime () =
-    let now = Unix.gettimeofday () in
-    let tm = Unix.localtime (now) in
-    let sd = Float.to_int @@ 1000000.0 *. (mod_float now 1.0)  in 
-    Printf.sprintf "%02d:%02d:%02d.%06d" tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec sd
-  in
-  let shutdown conn stop_err = try Unix.shutdown conn.fd Unix.SHUTDOWN_ALL with
-  | Unix.Unix_error(Unix.ECONNRESET, "shutdown", "") -> ()
+  let shutdown_noerr conn stop_err = try Unix.shutdown conn.fd Unix.SHUTDOWN_ALL with
+  | Unix.Unix_error(Unix.ECONNRESET, "shutdown", "")
+  | Unix.Unix_error(Unix.ECONNABORTED, "shutdown", "") -> ()
   | exc -> 
     Printf.eprintf "Shutdown connection from %s, unknown exception : %s\n%!" 
       (string_of_sockaddr conn.addr)
       (Printexc.to_string exc);
     if stop_err then raise exc
   in
-  let select () = try Unix.select !fdl [] [] 5.0 with 
-  | Unix.Unix_error(Unix.ECONNRESET, "select", "") -> ([], [], []) 
-(* debug ------------- to be remove after tracking ----- *)
-(* Unix.Unix_error(40, "select", "") sometimes ? ELOOP ? *)
-  | Unix.Unix_error( _ , "select", "") as e -> 
-      eprintf "%s - wait for connection - %s\n%!" (systime()) (Printexc.to_string e);
-      Gc.compact (); (* Useful ? *)
-      Unix.sleep 1; 
-      ([], [], []) 
-(* debug ----------------------------------------------- *)
-  | exc -> raise exc
+  let err_nb = ref 0 in
+  let flush_nosyserr conn = 
+    try flush conn.oc with 
+    | Sys_error msg -> incr err_nb; Printf.eprintf "Flush error %s : %s\n%!" (string_of_sockaddr conn.addr) msg
+    | e -> raise e 
   in
   let mem_limit = ref (used_mem ()) in 
+  Printf.eprintf "Starting avec timeout=%.0f, max connection=%d" conn_tmout max_conn;
   syslog `LOG_DEBUG (Printf.sprintf "Starting with %d ko of memory used" !mem_limit);
   while true do
+    Unix.sleepf 0.01;
     check_stopping ();
-    match select() with 
+    match Unix.select !fdl [] [] 0.1 with 
     | ([], _, _) ->
       let n = List.length !fdl in
       if n > 0 then
@@ -438,16 +479,19 @@ let wserver_basic syslog tmout max_clients g s addr_server =
             let ttl =  Unix.time() -. conn.start_time in
             if (ttl >= conn_tmout) && (conn.kind = Connected_client) then 
               begin
-                shutdown conn false;
+                shutdown_noerr conn false;
                 close_out_noerr conn.oc;
                 Unix.close conn.fd;
                 fdl:=List.filter (fun fd -> fd<>conn.fd ) !fdl;
                 conn.kind <- Closed_client;
                 syslog `LOG_DEBUG (Printf.sprintf "%s connection closed (timeout)" (string_of_sockaddr conn.addr) )
               end
-            else if conn.kind = Connected_client then 
-                flush conn.oc
-            else 
+            else if conn.kind <> Connected_client then 
+              (*begin
+                eprintf "Connection %s, flush\n%!" (string_of_sockaddr conn.addr);
+                flush_nosyserr conn.oc
+              end
+            else *) 
               let mem = ref (used_mem ()) in 
                 if !mem > !mem_limit then
                   begin 
@@ -457,7 +501,7 @@ let wserver_basic syslog tmout max_clients g s addr_server =
                     mem_limit := !mem * 2;
                   end
 #ifdef DEBUG
-           ;Printf.eprintf "- %d..%d ko used   \r%!" !mem !mem_limit
+                ;Printf.eprintf "C[%d], Err[%d] - %d..%d ko used   \r%!" (List.length !fdl) !err_nb !mem !mem_limit
 #endif
           ) !cl;
           cl:=List.filter (fun t -> t.kind <> Closed_client ) !cl;
@@ -480,30 +524,23 @@ let wserver_basic syslog tmout max_clients g s addr_server =
                 oc = Unix.out_channel_of_descr client_fd;
                 start_time = Unix.time ();
                 kind = Connected_client } :: !cl;
-              fdl := client_fd :: !fdl
+                fdl := client_fd :: !fdl
             end
           else
             begin (* treat incoming connection *)
-              let conn = List.find ( fun t -> t.fd = fd ) !cl in
+            let conn = List.find ( fun t -> t.fd = fd ) !cl in
               let remove_from_poll fd =
                 fdl:=List.filter (fun t -> t <> fd ) !fdl;
                 cl:=List.filter (fun t -> t.fd <> fd ) !cl
               in 
-              begin try
-                wserver_sock := conn.fd;
-                wserver_oc := conn.oc;
-                treat_connection tmout g conn.addr fd;
-                flush conn.oc;
-              with
-              | e ->
-                Printf.eprintf "Connection from %s, unexcepted event : %s \n%!" 
-                                (string_of_sockaddr conn.addr)
-                                (Printexc.to_string e)
-              end;
-              remove_from_poll conn.fd;
-              shutdown conn false;
+              wserver_sock := conn.fd;
+              wserver_oc := conn.oc;
+              treat_connection tmout g conn.addr fd;
+              flush_nosyserr conn;
+              shutdown_noerr conn false;
               close_out_noerr conn.oc;
               Unix.close conn.fd;
+              remove_from_poll conn.fd
             end
           ;
           loop lfd (i+1)
@@ -524,7 +561,7 @@ let f syslog addr_opt port tmout max_clients g =
   let s = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
   let a =  (Unix.ADDR_INET (addr, port)) in 
   Unix.bind s a;
-  Unix.listen s 4;
+  Unix.listen s 10;
   Unix.setsockopt s Unix.SO_KEEPALIVE true;
   let tm = Unix.localtime (Unix.time ()) in
   eprintf "Ready %4d-%02d-%02d %02d:%02d port %d...\n%!"

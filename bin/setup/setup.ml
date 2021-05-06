@@ -16,7 +16,7 @@ let printer_conf =
                         { status = Wserver.http
                         ; header = Wserver.header
                         ; body = Wserver.print_string
-                        ; flush = Wserver.wflush
+                        ; flush = ignore
                         }
   }
 

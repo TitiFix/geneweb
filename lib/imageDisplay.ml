@@ -51,7 +51,6 @@ let print_image_type conf fname ctype =
           loop (len - olen)
       in
       loop len; close_in ic;
-      Output.flush conf;
       true
   | None -> false
 

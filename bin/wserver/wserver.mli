@@ -39,9 +39,6 @@ val print_string : string -> unit
 val header : string -> unit
     (* To print an http header line *)
 
-val wflush : unit -> unit
-    (* To flush page contents print. *)
-
 val http : Def.httpStatus -> unit
     (* [Output.status conf answer] sends the http header where [answer]
        represents the answer status. If empty string, "200 OK" is assumed. *)
@@ -51,6 +48,8 @@ val http_redirect_temporarily : string -> unit
        represents the Location where the request needs to be redirected. *)
 
 val status_string : Def.httpStatus -> string
+
+val log_exn : exn -> string -> string -> string -> string -> string
 
 val print_internal_error : exn -> string -> string -> string -> unit
 

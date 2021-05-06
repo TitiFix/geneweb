@@ -21,7 +21,7 @@ let output_conf =
   { status = out_httpStatus
   ; header = out_httpHeader
   ; body = Wserver.print_string
-  ; flush = Wserver.wflush
+  ; flush = ignore
   }
 
 let printer_conf = { Config.empty with output_conf }
@@ -1837,9 +1837,8 @@ let main () =
     ; ("-no_host_address", Arg.Set no_host_address, " Force no reverse host by address.")
     ; ("-digest", Arg.Set use_auth_digest_scheme, " Use Digest authorization scheme (more secure on passwords)")
     ; ("-add_lexicon", Arg.String (Mutil.list_ref_append lexicon_list), "<FILE> Add file as lexicon.")
-    ; ("-log", Arg.String (fun x -> GwdLog.oc := Some (match x with "1" | "stdout" -> stdout | "2" | "stderr" -> stderr | _ -> open_out x)), 
+    ; ("-log", Arg.String (fun x -> GwdLog.oc := Some (match x with "2" | "stderr" -> stderr | _ -> open_out x)), 
                       "<FILE> Log traces to this file (default is no log)\n" ^ 
-                      {|                         - use "1" or "stdout" to redirect to standard output.|} ^ "\n" ^
                       {|                         - use "2" or "stderr" to redirect to standard error.|})
     ; ("-log_level", Arg.Set_int GwdLog.verbosity, {|<N> Send messages with severity <= <N> to syslog (default: |} ^ string_of_int !GwdLog.verbosity ^ {|).|})
     ; ("-robot_xcl", Arg.String robot_exclude_arg, "<CNT>,<SEC> Exclude connections when more than <CNT> requests in <SEC> seconds.")
@@ -1970,30 +1969,22 @@ let () =
     GwdLog.syslog `LOG_EMERG ("Geneweb terminated : " ^ (Printexc.to_string e));
 #ifdef DEBUG
     let tm = Unix.localtime (Unix.time ()) in
-    begin match !GwdLog.oc with
-    | Some oc -> 
-      if oc <> stdout && oc <> stderr then 
-        begin 
-          Printf.fprintf oc 
-            "----- %02d:%02d:%02d - Unexpected error (fatal) : %s\n%!" 
-            tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec (Printexc.to_string e);
-          Printexc.print_backtrace oc;
-          flush oc
-        end
-    | None -> ()
-    end;
     if not !daemon && not !Wserver.cgi then
     begin
+      let fname = Wserver.log_exn e (Printexc.get_backtrace ()) "" "" "" in
       flush stderr; flush stdout;
       Printf.eprintf
         "----- %02d:%02d:%02d - Unexpected error (fatal) : %s\n%!" 
         tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec (Printexc.to_string e);
       Printexc.print_backtrace stderr;
+      if fname <> "" then Printf.eprintf "----- saved to %s\n%!" fname;
       Printf.eprintf "----- Geneweb server terminated, press <Enter> to exit\n%!";
       try ignore @@ read_line () with _ -> ()
     end;
 #endif
-    if !Wserver.cgi then
+    if !daemon then
+      ignore @@ Wserver.log_exn e (Printexc.get_backtrace ()) "" "" ""
+    else if !Wserver.cgi then
        Wserver.print_internal_error e 
           (try Sys.getenv "REMOTE_ADDR" with Not_found -> "")
           (try Sys.getenv "SCRIPT_NAME" with Not_found -> "")

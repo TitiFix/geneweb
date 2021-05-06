@@ -113,8 +113,7 @@ let gen_trailer with_logo conf =
   if with_logo then Templ.print_copyright_with_logo conf
   else Templ.print_copyright conf;
   Util.include_template conf [] "js" (fun () -> ());
-  Output.print_string conf "</body>\n</html>\n";
-  Output.flush conf
+  Output.print_string conf "</body>\n</html>\n"
 
 let trailer = gen_trailer true
 

@@ -916,7 +916,6 @@ let treat_request =
 #endif
         | _ -> incorrect_request
       end conf base ;
-    Output.flush conf ;
   end else
     begin
       let title _ = Output.print_string conf (Utf8.capitalize_fst (transl conf "error")) in
@@ -928,4 +927,4 @@ let treat_request =
     end
 
 let treat_request conf =
-  try treat_request conf with Update.ModErr _ -> Output.flush conf
+  try treat_request conf with Update.ModErr _ -> ()
