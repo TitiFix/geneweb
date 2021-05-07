@@ -521,9 +521,9 @@ let treat_request =
                 Perso.interp_templ t conf base p
               | _ -> person_selected conf base p
           else if conf.bname = "" then 
-              fun conf _ ->  (* default index page *)
-              Util.html conf;
-              include_template conf [] "index" (fun () -> propose_base conf)
+              fun conf _ ->  
+                Util.html conf;
+                include_template conf [] "index" (fun () -> propose_base conf)
           else 
               notfound_request conf conf.bname
         | "A" ->

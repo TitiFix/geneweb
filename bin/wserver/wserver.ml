@@ -201,18 +201,34 @@ let log_exn e info addr path query =
     let tm = Unix.localtime (now) in
     let sd = Float.to_int @@ 1000000.0 *. (mod_float now 1.0)  in 
     Printf.sprintf "%02d:%02d:%02d.%06d" tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec sd
-  in   
+  in
+  let rec env_vars lvar =
+    match lvar with
+    | var::lvar ->
+      (try Printf.sprintf "   %s=%s\n" var (Sys.getenv var) with Not_found -> "")
+      ^ (env_vars lvar)
+    | _ -> ""
+  in
   let fname =  Sys.executable_name ^ "-error.txt " in
   let msg = Printf.sprintf 
               "---- %s - Unexcepted exception : %s\n\
               - Raised with request %s?%s%s\n\
               - Mode : %s, process id = %d\n\
+              - Environnement :\n%s\
               - HTTP state (printing_state) : %s before exception\n\
               - Info :\n%s\n"
-              (systime()) (Printexc.to_string e) 
+              (systime()) 
+              (match e with
+              | Sys_error msg -> "Sys_error - " ^ msg
+              | e -> Printexc.to_string e) 
               path query 
               ((if addr <> "" then " from " else "") ^ addr)
               (if !cgi then "CGI script" else "HTTP server") (Unix.getpid ())
+              (env_vars [ "LANG"; "REMOTE_HOST"; "REMOTE_ADDR"; "SCRIPT_NAME"; "QUERY_STRING"
+                        ; "SERVER_NAME"; "SERVER_PORT"; "SERVER_PROTOCOL"; "SERVER_SOFTWARE"
+                        ; "AUTH_TYPE"; "REQUEST_METHOD"; "CONTENT_TYPE"; "CONTENT_LENGTH"
+                        ; "HTTP_ACCEPT_LANGUAGE"; "HTTP_REFERER"; "HTTP_USER_AGENT";"GATEWAY_INTERFACE" ]
+              )
               (match !printing_state with 
               | Nothing -> "Nothing sent"
               | Status -> "HTTP status sent without content"
@@ -235,12 +251,12 @@ let log_exn e info addr path query =
     ""
 
 let print_internal_error e addr path query =
-  let _ = log_exn e (Printexc.get_backtrace ()) addr path query in 
+  let backtrace = Printexc.get_backtrace () in
+  let fname = log_exn e backtrace addr path query in 
   let state = !printing_state in
   if !printing_state = Nothing then 
     http (if !cgi then Def.OK else Def.Internal_Server_Error);
-  if !printing_state = Status then 
-    begin
+  if !printing_state = Status then begin
       header "Content-type: text/html; charset=UTF-8";
       header "Connection: close"
     end;
@@ -251,6 +267,7 @@ let print_internal_error e addr path query =
           - HTTP state (printing_state) : %s before exception\n\
           - Exception : %s\n\
           - Backtrace :\n<hr>\n%s\n</pre><hr>\n\
+          Saved in %s<hr>\n
           <a href=\\>[Home page]</a>  \
           <a href=\"javascript:window.history.go(-1)\">[Previous page]</a>\n\
           </body>\n</html>\n"
@@ -263,24 +280,13 @@ let print_internal_error e addr path query =
             | Contents -> "Some HTTP data sent" 
           )
           (match e with 
-            | Sys_error m -> ("System error : " ^ m)
-            | _ -> Printexc.to_string e
+          | Sys_error msg -> "Sys_error - " ^ msg
+          | _ -> Printexc.to_string e
           )
-          (Printexc.get_backtrace ())
+          backtrace
+          fname
 
 let treat_connection tmout callback addr fd =
-  if Sys.unix then
-    if tmout > 0 then
-      begin let spid = Unix.fork () in
-        if spid > 0 then
-          begin
-            ignore @@ Sys.signal Sys.sigalrm (Sys.Signal_handle (timeout tmout spid)) ;
-            ignore @@ Unix.alarm tmout ;
-            ignore @@ Unix.waitpid [] spid ;
-            ignore @@ Sys.signal Sys.sigalrm Sys.Signal_default ;
-            exit 0
-          end
-      end;
   let (meth, path_and_query, request, contents) =
     let strm = Stream.of_channel (Unix.in_channel_of_descr fd) in
     get_request_and_content strm
@@ -404,6 +410,16 @@ let accept_connection tmout max_clients callback s =
         Unix.close s;
         wserver_sock := t;
         wserver_oc := Unix.out_channel_of_descr t;
+        if tmout > 0 then begin 
+          let spid = Unix.fork () in
+            if spid > 0 then begin
+              ignore @@ Sys.signal Sys.sigalrm (Sys.Signal_handle (timeout tmout spid)) ;
+              ignore @@ Unix.alarm tmout ;
+              ignore @@ Unix.waitpid [] spid ;
+              ignore @@ Sys.signal Sys.sigalrm Sys.Signal_default ;
+              exit 0
+            end
+        end;
         treat_connection tmout callback addr t ;
         close_connection () ;
         exit 0
@@ -421,7 +437,7 @@ let accept_connection tmout max_clients callback s =
 
 (* elementary HTTP server, basic mode for windows *)
 #ifdef WINDOWS
-type conn_kind = Server | Connected_client | Closed_client 
+type conn_kind = Server | Connected_client  | Closed_client
 type conn_info = {
     addr : Unix.sockaddr;
     fd : Unix.file_descr;
@@ -439,24 +455,27 @@ let wserver_basic syslog tmout max_clients g s addr_server =
   in
   let cl = ref [server] in
   let fdl = ref [s] in
+  let remove_from_poll fd =
+    fdl:=List.filter (fun t -> t <> fd ) !fdl;
+    cl:=List.filter (fun t -> t.fd <> fd ) !cl
+  in 
   let max_conn = 
     match max_clients with
     | Some max -> if max = 0 then 10 else max * 5
     | None -> 10
   in 
-  let conn_tmout = Float.of_int tmout in
+  let conn_tmout = Float.of_int (if tmout < 30 then 30 else tmout) in
   let used_mem () = 
     let st = Gc.stat () in 
     (st.live_blocks * Sys.word_size) / 8 / 1024
   in 
-  let shutdown_noerr conn stop_err = try Unix.shutdown conn.fd Unix.SHUTDOWN_ALL with
+  let shutdown_noerr conn = try Unix.shutdown conn.fd Unix.SHUTDOWN_ALL with
   | Unix.Unix_error(Unix.ECONNRESET, "shutdown", "")
   | Unix.Unix_error(Unix.ECONNABORTED, "shutdown", "") -> ()
   | exc -> 
     Printf.eprintf "Shutdown connection from %s, unknown exception : %s\n%!" 
       (string_of_sockaddr conn.addr)
-      (Printexc.to_string exc);
-    if stop_err then raise exc
+      (Printexc.to_string exc)
   in
   let err_nb = ref 0 in
   let flush_nosyserr conn = 
@@ -465,46 +484,47 @@ let wserver_basic syslog tmout max_clients g s addr_server =
     | e -> raise e 
   in
   let mem_limit = ref (used_mem ()) in 
-  Printf.eprintf "Starting avec timeout=%.0f, max connection=%d" conn_tmout max_conn;
-  syslog `LOG_DEBUG (Printf.sprintf "Starting with %d ko of memory used" !mem_limit);
+  Printf.eprintf "Starting with timeout=%.0f sec., max connection=%d, %d ko of memory used\n%!" conn_tmout max_conn !mem_limit;
+  syslog `LOG_DEBUG (Printf.sprintf "Starting with timeout=%.0f sec., %d ko of memory used" conn_tmout !mem_limit);
   while true do
     Unix.sleepf 0.01;
     check_stopping ();
-    match Unix.select !fdl [] [] 0.1 with 
+    (* DO NOT reduce the maximal delay too low; 
+       the operating system might consider too many system calls as an attack and break connections *)
+    match Unix.select !fdl [] [] 15.0 with 
     | ([], _, _) ->
       let n = List.length !fdl in
-      if n > 0 then
-        begin 
+      if n > 0 then begin 
           List.iter (fun conn -> 
             let ttl =  Unix.time() -. conn.start_time in
-            if (ttl >= conn_tmout) && (conn.kind = Connected_client) then 
-              begin
-                shutdown_noerr conn false;
+            if (ttl >= conn_tmout) && (conn.kind = Connected_client) then begin
+                shutdown_noerr conn;
                 close_out_noerr conn.oc;
                 Unix.close conn.fd;
-                fdl:=List.filter (fun fd -> fd<>conn.fd ) !fdl;
-                conn.kind <- Closed_client;
-                syslog `LOG_DEBUG (Printf.sprintf "%s connection closed (timeout)" (string_of_sockaddr conn.addr) )
+                Printf.eprintf "%s connection closed (timeout)\n%!" (string_of_sockaddr conn.addr);
+                syslog `LOG_DEBUG (Printf.sprintf "%s connection closed (timeout)" (string_of_sockaddr conn.addr) );
+                fdl:=List.filter (fun t -> t <> conn.fd ) !fdl;
+                conn.kind <- Closed_client
+              end else 
+            if conn.kind = Connected_client then begin
+                try let _ = Unix.getpeername conn.fd in ()
+                with e -> 
+                  Printf.eprintf "Connection %s, closed by peer : %s \n%!" (string_of_sockaddr conn.addr)  (Printexc.to_string e);
+                  fdl:=List.filter (fun t -> t <> conn.fd ) !fdl;
+                  conn.kind <- Closed_client
+                end else
+            let mem = ref (used_mem ()) in 
+              if !mem > !mem_limit then begin
+                  syslog `LOG_INFO (Printf.sprintf "%d ko of memory used, invoke heap compaction" !mem);
+                  Gc.compact (); 
+                  mem := used_mem ();
+                  mem_limit := !mem * 2;
               end
-            else if conn.kind <> Connected_client then 
-              (*begin
-                eprintf "Connection %s, flush\n%!" (string_of_sockaddr conn.addr);
-                flush_nosyserr conn.oc
-              end
-            else *) 
-              let mem = ref (used_mem ()) in 
-                if !mem > !mem_limit then
-                  begin 
-                    syslog `LOG_INFO (Printf.sprintf "%d ko of memory used, invoke heap compaction" !mem);
-                    Gc.compact (); 
-                    mem := used_mem ();
-                    mem_limit := !mem * 2;
-                  end
 #ifdef DEBUG
-                ;Printf.eprintf "C[%d], Err[%d] - %d..%d ko used   \r%!" (List.length !fdl) !err_nb !mem !mem_limit
+              ;Printf.eprintf "Cnt[%d], Err[%d] - %d..%d ko used   \r%!" (List.length !fdl) !err_nb !mem !mem_limit
 #endif
           ) !cl;
-          cl:=List.filter (fun t -> t.kind <> Closed_client ) !cl;
+          cl:=List.filter (fun conn -> conn.kind <> Closed_client ) !cl;
           let n = List.length !cl in
           if n > max_conn then failwith ("Too many connection remaining : " ^ (string_of_int n))
         end
@@ -514,35 +534,27 @@ let wserver_basic syslog tmout max_clients g s addr_server =
         | [] ->
           ()
         | fd :: lfd -> 
-          if fd=s then
-            begin (* accept new incoming connection *)
-              let (client_fd, client_addr) = Unix.accept fd in 
-              Unix.setsockopt client_fd Unix.SO_KEEPALIVE true;
-              cl :=  { 
-                addr = client_addr;
-                fd = client_fd;
-                oc = Unix.out_channel_of_descr client_fd;
-                start_time = Unix.time ();
-                kind = Connected_client } :: !cl;
-                fdl := client_fd :: !fdl
-            end
-          else
-            begin (* treat incoming connection *)
+          if fd=s then begin (* accept new incoming connection *)
+            let (client_fd, client_addr) = Unix.accept fd in 
+            Unix.setsockopt client_fd Unix.SO_KEEPALIVE true;
+            cl :=  { 
+              addr = client_addr;
+              fd = client_fd;
+              oc = Unix.out_channel_of_descr client_fd;
+              start_time = Unix.time ();
+              kind = Connected_client } :: !cl;
+              fdl := client_fd :: !fdl
+          end else begin (* treat incoming connection *)
             let conn = List.find ( fun t -> t.fd = fd ) !cl in
-              let remove_from_poll fd =
-                fdl:=List.filter (fun t -> t <> fd ) !fdl;
-                cl:=List.filter (fun t -> t.fd <> fd ) !cl
-              in 
               wserver_sock := conn.fd;
               wserver_oc := conn.oc;
               treat_connection tmout g conn.addr fd;
               flush_nosyserr conn;
-              shutdown_noerr conn false;
+              shutdown_noerr conn;
               close_out_noerr conn.oc;
               Unix.close conn.fd;
               remove_from_poll conn.fd
-            end
-          ;
+          end;
           loop lfd (i+1)
       in
       loop l 0

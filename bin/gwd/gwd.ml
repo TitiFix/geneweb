@@ -1952,15 +1952,15 @@ let () =
        Solution: kill the other program or launch GeneWeb with another port number\n\
        (see -p option)\n%!"
       !selected_port;
-    exit 1
+    exit 2
 #ifdef UNIX
   | Unix.Unix_error (Unix.EACCES, "bind", arg) ->
     Printf.eprintf
-      "\nError: invalid access to the port %d: users port number less \
-       than 1024 are reserved to the system. Solution: do it as root \
-       or choose another port number greater than 1024.\n%!"
+      "\nError: invalid access to the port %d :\n\
+       users port number less than 1024 are reserved to the system.\n\
+       Solution: do it as root or choose another port number greater than 1024.\n%!"
       !selected_port;
-    exit 1
+    exit 2
 #endif
   | Dynlink.Error e -> 
     GwdLog.syslog `LOG_EMERG ("Geneweb terminated : " ^ (Dynlink.error_message e));
@@ -1969,24 +1969,26 @@ let () =
     GwdLog.syslog `LOG_EMERG ("Geneweb terminated : " ^ (Printexc.to_string e));
 #ifdef DEBUG
     let tm = Unix.localtime (Unix.time ()) in
-    if not !daemon && not !Wserver.cgi then
-    begin
-      let fname = Wserver.log_exn e (Printexc.get_backtrace ()) "" "" "" in
+    let backtrace = Printexc.get_backtrace () in
+    if not !daemon && not !Wserver.cgi then begin
+      let fname = Wserver.log_exn e backtrace "" "" "" in
       flush stderr; flush stdout;
       Printf.eprintf
         "----- %02d:%02d:%02d - Unexpected error (fatal) : %s\n%!" 
         tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec (Printexc.to_string e);
-      Printexc.print_backtrace stderr;
+      Printf.eprintf "%s\n%!" backtrace;
       if fname <> "" then Printf.eprintf "----- saved to %s\n%!" fname;
       Printf.eprintf "----- Geneweb server terminated, press <Enter> to exit\n%!";
       try ignore @@ read_line () with _ -> ()
-    end;
-#endif
+    end else
     if !daemon then
-      ignore @@ Wserver.log_exn e (Printexc.get_backtrace ()) "" "" ""
-    else if !Wserver.cgi then
+      ignore @@ Wserver.log_exn e backtrace "" "" ""
+    else 
+    if !Wserver.cgi then
        Wserver.print_internal_error e 
-          (try Sys.getenv "REMOTE_ADDR" with Not_found -> "")
-          (try Sys.getenv "SCRIPT_NAME" with Not_found -> "")
-          (try Sys.getenv "QUERY_STRING" with Not_found -> "");
+        (try Sys.getenv "REMOTE_HOST" with Not_found ->
+           (try Sys.getenv "REMOTE_ADDR" with Not_found -> ""))
+        (try Sys.getenv "SCRIPT_NAME" with Not_found -> "")
+        (try Sys.getenv "QUERY_STRING" with Not_found -> "");
+#endif
     exit 1
