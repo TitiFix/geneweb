@@ -58,7 +58,7 @@ let speclist =
     , "Use Sosa module implementation based on `zarith` library" )
   ; ( "--syslog"
     , Arg.Unit set_syslog
-    , "Log gwd errors using syslog" )
+    , "Log gwd errors using syslog; default is log to a file defined by GW_SYSLOG_FILE env. variable" )
   ]
 
 let () =

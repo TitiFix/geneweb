@@ -56,54 +56,11 @@ let syslog (level : level) msg =
   then begin
     let log = Syslog.openlog ~flags @@ Filename.basename @@ Sys.executable_name in
     Syslog.syslog log level msg ;
-    Syslog.closelog log ;
-#ifdef DEBUG
-    Printexc.print_backtrace stderr ;
-#endif
+    Syslog.closelog log
   end
 #endif
 
 #ifndef SYSLOG
-let syslog (level : level) msg =
-  if !verbosity
-     >=
-     match level with
-     | `LOG_EMERG -> 0
-     | `LOG_ALERT -> 1
-     | `LOG_CRIT -> 2
-     | `LOG_ERR -> 3
-     | `LOG_WARNING -> 4
-     | `LOG_NOTICE -> 5
-     | `LOG_INFO -> 6
-     | `LOG_DEBUG -> 7
-  then begin
-    let tm = Unix.(time () |> localtime) in
-    let level =
-      match level with
-      | `LOG_EMERG -> "EMERGENCY"
-      | `LOG_ALERT -> "ALERT"
-      | `LOG_CRIT -> "CRITICAL"
-      | `LOG_ERR -> "ERROR"
-      | `LOG_WARNING -> "WARNING"
-      | `LOG_NOTICE -> "NOTICE"
-      | `LOG_INFO -> "INFO"
-      | `LOG_DEBUG -> "DEBUG"
-    in
-    let print oc = Printf.fprintf oc "[%s]: %s %s\n" (Mutil.sprintf_date tm) level msg in
-    begin match Sys.getenv_opt "GW_SYSLOG_FILE" with
-      | Some fn ->
-        let oc = open_out_gen [ Open_wronly ; Open_creat ; Open_append ] 0o644 fn in
-        print oc ;
-        close_out oc
-      | None -> print stderr
-    end ;
-#ifdef DEBUG
-    Printexc.print_backtrace stderr ;
-#endif
-  end
-#endif
-
-#ifdef WINDOWS
 let systime () =
   let now = Unix.gettimeofday () in
   let tm = Unix.localtime (now) in
@@ -112,7 +69,7 @@ let systime () =
 
 let syslog_block = ref false
 
-let syslog2 level msg =
+let syslog (level : level) msg =
   let severityLevel, severity = 
   match level with
       | `LOG_EMERG -> 0, "Emergency"
@@ -127,7 +84,15 @@ let syslog2 level msg =
   if !verbosity >= severityLevel then
     let ident = Filename.basename @@ Sys.executable_name in
     let tag = (if String.length ident > 32 then String.sub ident 0 32 else ident) in
-    let logfn = Filename.concat !(Util.cnt_dir) "syslog.txt" in
+    let log_filename bak_file =
+      match Sys.getenv_opt "GW_SYSLOG_FILE" with
+      | Some fn -> 
+          if bak_file then (Filename.remove_extension fn) ^ ".bak"
+          else fn
+      | None -> 
+          Filename.concat !(Util.cnt_dir) (if bak_file then "syslog.bak" else "syslog.txt")
+    in
+    let logfn = log_filename false in
     let log fname flag = 
       try 
         let oc = open_out_gen (flag::[Open_wronly; Open_creat]) 0o644 fname in
@@ -153,7 +118,7 @@ let syslog2 level msg =
         close_out oc;
         if logsize > 16000 then
           begin
-            let bakfn = Filename.concat !(Util.cnt_dir) "syslog-bak.txt" in
+            let bakfn = log_filename true in
             let saved = (try Unix.rename logfn bakfn; true with _ ->
               Printf.eprintf "Error : backup %s to %s failed\n%!" logfn bakfn; false) 
             in

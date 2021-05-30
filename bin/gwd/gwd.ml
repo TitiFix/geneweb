@@ -1790,10 +1790,9 @@ let string_of_inet_aux x = Unix.string_of_inet_addr (Unix.gethostbyname x).Unix.
 
 let main () =
   let usage =
-    "Usage: " ^ Filename.basename Sys.argv.(0) ^
-    " [options] where options are:"
+    "Usage: " ^ Filename.basename Sys.argv.(0) ^ " [options] where options are:"
   in
-  let speclist =
+  let speclist = ref
     [
       ("-hd", Arg.String Util.add_lang_path, "<DIR> Directory where the directory lang is installed.")
     ; ("-bd", Arg.String Util.set_base_dir, "<DIR> Directory where the databases are installed.")
@@ -1859,11 +1858,28 @@ let main () =
           ) :: !Api_link.api_servers
       end, "<REGEX:HOST:PORT> API url for links tree.")
 #endif
-    ]
-  in
-  let speclist = List.sort compare speclist in
-  let speclist = Arg.align ~limit:22 speclist in
-  let anonfun s = raise (Arg.Bad ("don't know what to do with " ^ s)) in
+]
+in
+let print_help () = 
+  Arg.usage !speclist usage;
+  Printf.eprintf "\nThe following environnement variables can be set :\n\
+                  - LANG or LC_CTYPE       Default language (if -lang option not used)\n%!";
+#ifndef SYSLOG
+  Printf.eprintf "- GW_SYSLOG_FILE         Path and file name to store syslog messages\n        \
+                  (default syslog file is syslog.txt in -wd option directory)\n%!";
+#endif
+  exit 0
+in
+speclist := List.sort compare !speclist;
+speclist := List.append !speclist [
+      ("-help", Arg.Unit print_help, " Display this list of options.")
+    ; ("--help", Arg.Unit print_help, "")
+#ifdef WINDOWS
+    ; ("-?", Arg.Unit print_help, "")
+#endif
+    ];
+speclist := Arg.align ~limit:22 !speclist;
+let anonfun s = raise (Arg.Bad ("don't know what to do with " ^ s)) in
   default_lang := begin
     let s = try Sys.getenv "LANG" with Not_found -> "" in
     if List.mem s Version.available_languages then s
@@ -1874,8 +1890,8 @@ let main () =
         if List.mem s Version.available_languages then s else !default_lang
       else !default_lang
   end;
-  arg_parse_in_file (chop_extension Sys.argv.(0) ^ ".arg") speclist anonfun usage;
-  Arg.parse speclist anonfun usage;
+  arg_parse_in_file (chop_extension Sys.argv.(0) ^ ".arg") !speclist anonfun usage;
+  Arg.parse !speclist anonfun usage;
   List.iter register_plugin !plugins;
   cache_lexicon ();
   if !images_dir <> "" then
@@ -1922,9 +1938,7 @@ let main () =
 
 let () =
 #ifdef DEBUG
-  Printexc.record_backtrace true;
-  Sys.enable_runtime_warnings false;
-  GwdLog.verbosity := 7; (* default is Debug verbosity *)
+  GwdLog.verbosity := 7; (* default is Debug verbosity in debug mode *)
 #endif
   try main ()
   with
