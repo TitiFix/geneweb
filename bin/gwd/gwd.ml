@@ -1873,9 +1873,9 @@ in
 speclist := List.sort compare !speclist;
 speclist := List.append !speclist [
       ("-help", Arg.Unit print_help, " Display this list of options.")
-    ; ("--help", Arg.Unit print_help, "")
+    ; ("--help", Arg.Unit print_help, " idem")
 #ifdef WINDOWS
-    ; ("-?", Arg.Unit print_help, "")
+    ; ("-?", Arg.Unit print_help, " idem")
 #endif
     ];
 speclist := Arg.align ~limit:22 !speclist;
