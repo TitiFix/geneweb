@@ -52,6 +52,16 @@ let ps =
     true
   end
  
+let a =
+  w_base begin fun conf base ->
+   match Util.find_person_in_env conf base "" with
+  | Some p ->
+      if Util.p_getenv conf.env "t" = Some  "FC"
+      then (!V7_interp.templ "fanchart" conf base p ; true)
+      else false
+  | _ -> false
+  end
+
 let c =
   w_base begin fun conf base ->
    match Util.find_person_in_env conf base "" with
@@ -79,12 +89,13 @@ let d =
 let ns = "v7"
 
 let _ =
+  Util.add_lang_path !Gwd_lib.GwdPlugin.assets ;
   let aux fn assets conf base =
-    Util.add_lang_path assets ;
     fn conf base
   in
   Gwd_lib.GwdPlugin.register ~ns
     [ "", aux home
+    ; "A", aux a
     ; "C", aux c
     ; "D", aux d
     ; "DOC", aux doc
